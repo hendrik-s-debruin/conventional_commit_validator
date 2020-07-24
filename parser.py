@@ -2,21 +2,45 @@ import ast
 import re
 import error
 
+def _parse(parse_func):
+    """
+    Decorator function to simplify some of the code
+
+    The parse function should return a tuple, with two elements:
+
+    * The class (not instance) of the tag to be created
+    * a list of all the instance's children. A child may be 'None'
+
+    Returns an instantiated tag
+    """
+
+    def inner(self):
+        start_index         = self.msg_index
+        (TagType, children) = parse_func(self)
+        end_index           = self.msg_index
+        tag = TagType(self.msg, start_index, end_index)
+        for child in children:
+            if child is not None:
+                tag.attach_child(child)
+        return tag
+
+    return inner
+
 class Parser:
     """
     Parser Grammar
     --------------
     CommitMsg:         TagLine ['\n' Body] ['\n' Footer]
-    TagLine:           Type ': ' Description [' ' Ellipsis]
+    TagLine:           Type ': ' Description [Ellipsis]
     Type:              Word [Scope] [BreakingChangeTag]
-    Ellipsis:          '...'
+    Ellipsis:          ' ...'
     BreakingChangeTag: '!'
     Scope:             '(' Word ')'
     Description:       Sentence
-    Word:              [a-zA-Z0-9]+
-    Sentence:          (Word [::space::]+)+ '.'
+    Word:              '[a-zA-Z0-9]'+
+    Sentence:          Word ['[::space::]' Word]+ '.'
     Body:              Paragraph+
-    Paragraph:         Sentence+ '\n'
+    Paragraph:         Sentence+
     Footer:            ([BreakingChange] Paragraph+)+
     BreakingChange:    'BREAKING CHANGE: '
     """
@@ -25,155 +49,138 @@ class Parser:
         self.msg       = msg
         self.msg_index = 0
 
+    def optional_parse(self, parse_fn):
+        """
+        Parses a component using the parse function 'parse_fn'. If the component
+        is not present, rolls back the parser. Returns the parsed tag if it is
+        present, else None
+        """
+        try:
+            start_index = self.msg_index
+            return parse_fn()
+        except:
+            self.rollback_index(start_index)
+            return None
+
+    def parse_zero_or_more(self, parse_fn):
+        parsed_tags = []
+        should_continue = True
+        while should_continue:
+            try:
+                before_loop_index = self.msg_index
+                parsed_tags.append(parse_fn())
+            except:
+                self.rollback_index(before_loop_index)
+        return parsed_tags
+
+    def parse_one_or_more(self, parse_fn):
+        return [parse_fn() + self.parse_zero_or_more(parse_fn)]
+
     def parse(self) -> ast.Token:
-        commit_msg = self.gobble_commit_msg(self.msg)
+        commit_msg = self.gobble_commit_msg()
         return commit_msg
 
-    def gobble_commit_msg(self, msg: str) -> ast.CommitMsg:
-        start_index = self.msg_index
-        tagline     = self.gobble_tagline()
-        end_index   = self.msg_index
-        commit_msg  = ast.CommitMsg(self.msg, start_index, end_index)
-        # # TODO these two are optional
-        # body    = self.gobble_body()
-        # footer  = self.gobble_footer()
+    @_parse
+    def gobble_commit_msg(self) -> ast.CommitMsg:
+        tagline = self.gobble_tagline()
+        body    = None #self.optional_parse(self.gobble_body)
+        footer  = None #self.optional_parse(self.gobble_footer)
+        return (ast.CommitMsg, [tagline, body, footer])
 
-        commit_msg.attach_child(tagline)
-        return commit_msg
-
+    @_parse
     def gobble_tagline(self) -> ast.TagLine:
-        start_index = self.msg_index
-        type_       = self.gobble_type()
+        type_        = self.gobble_type()
         self.gobble_string(': ')
-        description = self.gobble_description()
-        # TODO this one is optional
-        # self.gobble_ellipsis()
-        end_index = self.msg_index
+        description  = self.gobble_description()
+        ellipsis_tag = self.optional_parse(self.gobble_ellipsis)
+        return (ast.TagLine, [type_, description, ellipsis_tag])
 
-        tagline = ast.TagLine(self.msg, start_index, end_index)
-
-        tagline.attach_child(type_)
-        tagline.attach_child(description)
-        return tagline
-
+    @_parse
     def gobble_type(self) -> ast.Type:
-        start_index = self.msg_index
-        word = self.gobble_word()
-        # TODO these two are optional
-        scope           = None
-        breaking_change = None
-        try:
-            before_scope_index = self.msg_index
-            scope = self.gobble_scope()
-        except:
-            self.rollback_index(before_scope_index)
-            # print("has no scope")
+        word            = self.gobble_word()
+        scope           = self.optional_parse(self.gobble_scope)
+        breaking_change = self.optional_parse(self.gobble_breaking_change_tag)
+        return (ast.Type, [word, scope, breaking_change])
 
-        try:
-            before_breaking_change_index = self.msg_index
-            breaking_change = self.gobble_breaking_change_tag()
-            # print("is breaking change")
-        except:
-            self.rollback_index(before_breaking_change_index)
-            # print("is not breaking change")
-            raise
+    @_parse
+    def gobble_ellipsis(self) -> ast.EllipsisTag:
+        self.gobble_string(" ...")
+        return (ast.EllipsisTag, [])
 
-        end_index = self.msg_index
-
-        type_tag = ast.Type(self.msg, start_index, end_index)
-        type_tag.attach_child(word)
-        if scope is not None:
-            type_tag.attach_child(scope)
-        if breaking_change is not None:
-            type_tag.attach_child(breaking_change)
-
-        return type_tag
-
-    # def gobble_ellipsis(self) -> ast.EllipsisTag:
-    #     self.gobble_string("...")
-    #     return ast.EllipsisTag()
-
+    @_parse
     def gobble_breaking_change_tag(self) -> ast.BreakingChangeTag:
-        start_index = self.msg_index
         self.gobble_string('!')
-        end_index = self.msg_index
+        return (ast.BreakingChangeTag, [])
 
-        return ast.BreakingChangeTag(self.msg, start_index, end_index)
-
+    @_parse
     def gobble_scope(self) -> ast.ScopeTag:
         self.gobble_string('(')
-        start_index = self.msg_index
         scope_name  = self.gobble_word()
-        end_index   = self.msg_index
         self.gobble_string(')')
+        return (ast.Scope, [scope_name])
 
-        scope = ast.Scope(self.msg, start_index, end_index)
-        scope.attach_child(scope_name)
-
-        return scope
-
+    @_parse
     def gobble_description(self) -> ast.Description:
-        start_index = self.msg_index
         text = self.gobble_sentence()
-        end_index = self.msg_index
-        description = ast.Description(self.msg, start_index, end_index)
-        description.attach_child(text)
+        return (ast.Description, [text])
 
-        return description
-
+    @_parse
     def gobble_word(self) -> ast.Text:
-        # TODO do not compile this on each invocation
-        regex = re.compile("[a-zA-Z0-9]")
-        start_index = self.msg_index
+        regex = re.compile("[a-zA-Z0-9]") # TODO do not compile this on each invocation
         gobbled = False
+        start_index = self.msg_index
         while(regex.match(self.current())):
             gobbled = True
             self.gobble()
         if not gobbled:
-            # TODO handle failure to gobble a word here
-            print("did not gobble! THIS IS AN ERROR")
-            pass
-        end_index = self.msg_index
-        text = ast.Text(self.msg, start_index, end_index)
-        return text
+            raise error.ParseError("[::alphanumeric::]", start_index, self.msg)
+        return (ast.Text, [])
 
+    @_parse
     def gobble_sentence(self) -> ast.Text:
-        # TODO do not compile this on each invocation
-        regex = re.compile("[a-zA-Z0-9\s]+")
-        start_index = self.msg_index
-        gobbled = False
-        while(regex.match(self.current())):
-            gobbled = True
-            self.gobble()
-        if not gobbled:
-            # TODO make this better
-            raise RuntimeError("Could not gobble sentence")
-            pass
-        if(self.peek() == '.'):
-            self.gobble()
-        end_index = self.msg_index
+        self.gobble_word()
+        should_continue = True
+        while should_continue:
+            try:
+                begin_loop_index = self.msg_index
+                self.gobble_string(" ")
+                try:
+                    self.gobble_word()
+                except Exception as e:
+                    print(e)
+            except:
+                self.rollback_index(begin_loop_index)
+                should_continue = False
+        self.gobble_string(".")
 
-    # def gobble_body(self):
-    #     pass
+        return (ast.Text, [])
 
-    # def gobble_paragraph(self):
-    #     pass
+    @_parse
+    def gobble_body(self):
+        self.gobble_string("\n")
+        self.parse_one_or_more(self.gobble_paragraph)
+        return (ast.Text, [])
 
-    # def gobble_footer(self):
-    #     pass
+    @_parse
+    def gobble_paragraph(self):
+        self.parse_one_or_more(self.gobble_sentence)
+        return (ast.Text, [])
 
-    # def gobble_breaking_change(self):
-    #     pass
+    def gobble_footer(self):
+        pass
+
+    def gobble_breaking_change(self):
+        pass
 
     def gobble_string(self, string: str):
+        initial_index = self.msg_index
         for i in range(len(string)):
             if string[i] == self.current():
                 self.gobble()
             else:
-                raise RuntimeError("Expected string: '" + string + "'")
+                raise error.ParseError(string, initial_index, self.msg)
 
     def gobble(self):
-        # print("gobble: '" + self.msg[self.msg_index] + "'")
         self.msg_index = self.msg_index + 1
 
     def current(self):
@@ -190,4 +197,3 @@ class Parser:
 
     def rollback_index(self, i):
         self.msg_index = i
-

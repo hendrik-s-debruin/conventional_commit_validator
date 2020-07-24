@@ -14,9 +14,6 @@ class Token:
 class CommitMsg(Token):
     def __init__(self, text: str, start_index: int, end_index: int):
         super().__init__(text, start_index, end_index)
-        # self.TagLine = None
-        # self.Body    = None
-        # self.Footer  = None
 
 class Scope(Token):
     def __init__(self, text: str, start_index: int, end_index: int):
@@ -27,8 +24,8 @@ class Description(Token):
         super().__init__(text, start_index, end_index)
 
 class EllipsisTag(Token):
-    def __init__(self):
-        pass
+    def __init__(self, text: str, start_index: int, end_index: int):
+        super().__init__(text, start_index, end_index)
 
 class Type(Token):
     def __init__(self, text: str, start_index: int, end_index: int):
@@ -45,15 +42,7 @@ class ScopeTag(Token):
 class TagLine(Token):
     def __init__(self, text: str, start_index: int, end_index: int):
         super().__init__(text, start_index, end_index)
-        # self.Type        = None
-        # self.Description = None
-        # self.Ellipsis    = None
 
 class Text(Token):
     def __init__(self, text: str, start_index: int, end_index: int):
         super().__init__(text, start_index, end_index)
-
-# class AST:
-#     def __init__(self, text: str, token: Token):
-#         self.text = text
-#         self.root = token
